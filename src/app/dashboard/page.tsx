@@ -15,6 +15,8 @@ import {
 import { Button } from "@/components/ui/button";
 import Navbar from "@/components/layout/Navbar";
 import { mockChartData, mockFootprintHistory } from "@/lib/mock-data";
+import { db } from "@/lib/firebase/config";
+import { collection, query, where, getDocs, orderBy } from "firebase/firestore";
 
 // Animated number counter
 function CountUp({ end, decimals = 1, duration = 1.5 }: { end: number; decimals?: number; duration?: number }) {
@@ -146,7 +148,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 const DONUT_COLORS = ["#2D7D4A", "#6BAA75", "#8B5A2B", "#0B3B2A"];
 
 export default function DashboardPage() {
-  const [chartView, setChartView] = useState<"monthly" | "weekly" | "yearly">("monthly");
+  const [chartView, setChartView] = useState<"daily" | "weekly" | "monthly">("daily");
   const [currentDate, setCurrentDate] = useState("");
   const [user, setUser] = useState<{ email: string; name: string } | null>(null);
   const [footprints, setFootprints] = useState<any[]>([]);
@@ -174,20 +176,47 @@ export default function DashboardPage() {
     const name = localStorage.getItem("userName") || email.split('@')[0];
     setUser({ email, name });
 
-    // Get footprint history from localStorage
-    const historyStr = localStorage.getItem("footprintHistory");
-    if (historyStr) {
+    // Fetch real data from Firebase Firestore
+    const fetchDBData = async () => {
       try {
-        const history = JSON.parse(historyStr);
-        if (Array.isArray(history) && history.length > 0) {
-          setFootprints(history);
-        }
-      } catch (e) {
-        console.error("Failed to parse history from local storage", e);
-      }
-    }
+        const q = query(
+          collection(db, "footprints"),
+          where("userEmail", "==", email)
+        );
+        const snapshot = await getDocs(q);
+        const history: any[] = [];
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          history.push({
+            ...data,
+            // Convert Firestore timestamp or fallback to stored timestamp string
+            createdAt: data.createdAt?.toDate()?.toISOString() || data.timestamp
+          });
+        });
 
-    setLoading(false);
+        // Sort history by date ascending (oldest to newest) since we removed orderBy
+        history.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+        if (history.length > 0) {
+          setFootprints(history);
+        } else {
+          // Fallback to local storage if DB is empty or fails
+          const historyStr = localStorage.getItem("footprintHistory");
+          if (historyStr) {
+            const localHistory = JSON.parse(historyStr);
+            if (Array.isArray(localHistory) && localHistory.length > 0) {
+              setFootprints(localHistory);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch history from Firestore", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDBData();
   }, [router]);
 
   // Mock user data for now - replace with actual user data from your database
@@ -370,16 +399,16 @@ export default function DashboardPage() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
             <div>
               <h2 className="text-lg font-bold">Your Carbon Timeline</h2>
-              <p className="text-sm text-muted-foreground">Historical data + 6-month projection</p>
+              <p className="text-sm text-muted-foreground">Actual footprint history</p>
             </div>
             <div className="flex gap-2">
-              {(["weekly", "monthly", "yearly"] as const).map((v) => (
+              {(["daily", "weekly", "monthly"] as const).map((v) => (
                 <button
                   key={v}
                   onClick={() => setChartView(v)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all capitalize ${chartView === v
-                    ? "bg-[#6BAA75] dark:bg-[#4CD964] text-white dark:text-[#0A1F18]"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all capitalize ${chartView === v
+                    ? "bg-card shadow-sm text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/80"
                     }`}
                 >
                   {v}
@@ -389,24 +418,96 @@ export default function DashboardPage() {
           </div>
 
           <ResponsiveContainer width="100%" height={280}>
-            <AreaChart data={mockChartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+            <AreaChart
+              data={(() => {
+                // Use real data if we have it, otherwise fallback to mock so it's never empty
+                const sourceData = activeData;
+                if (sourceData.length === 0) return [];
+
+                const now = new Date();
+
+                // 1. Generate empty trailing periods based on the view so the graph never flatlines
+                // This ensures we always show a timeline (e.g. last 7 days) even if data only exists for today.
+                const periods: string[] = [];
+                if (chartView === "daily") {
+                  for (let i = 6; i >= 0; i--) {
+                    const d = new Date(now);
+                    d.setDate(d.getDate() - i);
+                    periods.push(d.toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+                  }
+                } else if (chartView === "weekly") {
+                  for (let i = 3; i >= 0; i--) {
+                    const d = new Date(now);
+                    d.setDate(d.getDate() - (i * 7));
+                    const diff = d.getDate() - d.getDay();
+                    const weekStart = new Date(d.setDate(diff));
+                    periods.push("Wk of " + weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+                  }
+                } else if (chartView === "monthly") {
+                  for (let i = 5; i >= 0; i--) {
+                    const d = new Date(now);
+                    d.setMonth(d.getMonth() - i);
+                    periods.push(d.toLocaleDateString("en-US", { month: "short", year: "2-digit" }));
+                  }
+                }
+
+                // 2. Initialize aggregated map with 0s for our trailing periods
+                const aggregated = new Map<string, number>();
+                periods.forEach(p => aggregated.set(p, 0));
+
+                const getGroupKey = (dateStr: string, view: string) => {
+                  const d = new Date(dateStr);
+                  if (view === "daily") return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                  if (view === "weekly") {
+                    const diff = d.getDate() - d.getDay();
+                    const weekStart = new Date(d.setDate(diff));
+                    return "Wk of " + weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                  }
+                  if (view === "monthly") return d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+                  return dateStr;
+                };
+
+                // 3. Populate map with actual data sums
+                sourceData.forEach(entry => {
+                  const dateToUse = entry.createdAt || entry.timestamp || new Date().toISOString();
+                  const key = getGroupKey(dateToUse, chartView);
+                  // We only care about data that falls into our trailing periods for the chart
+                  if (aggregated.has(key)) {
+                    aggregated.set(key, (aggregated.get(key) || 0) + Number(entry.total));
+                  }
+                });
+
+                // 4. Convert map to array for Recharts
+                // Because we pre-filled the map in chronological order, iteration maintains that order
+                return Array.from(aggregated.entries()).map(([label, sum]) => ({
+                  label,
+                  actual: parseFloat(sum.toFixed(2))
+                }));
+              })()}
+              margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
+            >
               <defs>
-                <linearGradient id="colorHistorical" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#6BAA75" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#6BAA75" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="colorProjected" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#4CD964" stopOpacity={0.2} />
+                <linearGradient id="colorActual" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#4CD964" stopOpacity={0.3} />
                   <stop offset="95%" stopColor="#4CD964" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}t`} />
               <Tooltip content={<CustomTooltip />} />
               <Legend wrapperStyle={{ fontSize: "12px", paddingTop: "12px" }} />
-              <Area type="monotone" dataKey="historical" name="Historical" stroke="#6BAA75" strokeWidth={2.5} fill="url(#colorHistorical)" dot={{ r: 3, fill: "#6BAA75" }} connectNulls />
-              <Area type="monotone" dataKey="projected" name="Projected" stroke="#4CD964" strokeWidth={2} strokeDasharray="5 3" fill="url(#colorProjected)" dot={{ r: 2.5, fill: "#4CD964" }} connectNulls />
+              <Area
+                type="monotone"
+                dataKey="actual"
+                name="Your Footprint"
+                stroke="#4CD964"
+                strokeWidth={3}
+                fill="url(#colorActual)"
+                dot={{ r: 4, fill: "#4CD964", strokeWidth: 2, stroke: "var(--background)" }}
+                activeDot={{ r: 6, strokeWidth: 0 }}
+                connectNulls
+              />
             </AreaChart>
           </ResponsiveContainer>
         </div>

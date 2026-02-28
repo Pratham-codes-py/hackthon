@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import Navbar from "@/components/layout/Navbar";
 import Footer from "@/components/layout/Footer";
-import { mockTestimonials, mockPartners } from "@/lib/mock-data";
+import { mockPartners } from "@/lib/mock-data";
 import { LoginModal } from "@/components/auth/LoginModal";
 
 // Animated counter component
@@ -174,40 +174,8 @@ function FeatureCard({ icon, title, description, color, delay }: {
   );
 }
 
-// Testimonial card
-function TestimonialCard({ testimonial, active }: { testimonial: typeof mockTestimonials[0]; active: boolean }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: active ? 1 : 0.5, scale: active ? 1 : 0.95 }}
-      transition={{ duration: 0.4 }}
-      className={`bg-card border rounded-2xl p-6 flex flex-col gap-4 transition-all ${active ? "border-[#6BAA75] shadow-lg" : "border-border"}`}
-    >
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-[#6BAA75] dark:bg-[#4CD964] flex items-center justify-center text-white dark:text-[#0A1F18] font-bold text-sm">
-          {testimonial.avatar}
-        </div>
-        <div>
-          <p className="font-semibold text-sm">{testimonial.name}</p>
-          <p className="text-xs text-muted-foreground">{testimonial.role}</p>
-        </div>
-        <span className="ml-auto text-xs font-bold text-[#6BAA75] dark:text-[#4CD964] bg-[#6BAA75]/10 px-2 py-0.5 rounded-full">
-          -{testimonial.reduction}
-        </span>
-      </div>
-      <div className="flex gap-0.5">
-        {Array.from({ length: testimonial.rating }).map((_, i) => (
-          <Star key={i} className="w-4 h-4 fill-amber-400 text-amber-400" />
-        ))}
-      </div>
-      <p className="text-sm text-muted-foreground leading-relaxed italic">"{testimonial.text}"</p>
-    </motion.div>
-  );
-}
-
 export default function LandingPage() {
   const [loginOpen, setLoginOpen] = useState(false);
-  const [activeTestimonial, setActiveTestimonial] = useState(0);
   const [particles, setParticles] = useState<Array<{ id: number; left: number; top: number; duration: number; delay: number }>>([]);
   const heroRef = useRef(null);
 
@@ -222,14 +190,6 @@ export default function LandingPage() {
         delay: Math.random() * 3,
       }))
     );
-  }, []);
-
-  // Auto-rotate testimonials
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setActiveTestimonial((prev) => (prev + 1) % mockTestimonials.length);
-    }, 4000);
-    return () => clearInterval(timer);
   }, []);
 
   return (
@@ -453,7 +413,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── Features Grid ── */}
-      <section className="py-24 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto bg-muted/30 rounded-3xl mx-4 sm:mx-6 lg:mx-8">
+      <section className="py-24 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto bg-muted/30 rounded-3xl mb-24">
         <div className="text-center mb-16">
           <motion.h2
             initial={{ opacity: 0, y: 20 }}
@@ -466,70 +426,21 @@ export default function LandingPage() {
           <p className="text-muted-foreground">Powerful tools designed for real-world sustainability impact.</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 place-items-stretch justify-items-center">
           {[
             { icon: <BarChart3 className="w-6 h-6" />, title: "Smart Calculator", description: "Accurate, science-backed carbon footprint estimation across all life areas.", color: "#2D7D4A" },
             { icon: <Sparkles className="w-6 h-6" />, title: "AI Recommendations", description: "Personalized reduction strategies that adapt to your choices and lifestyle.", color: "#6BAA75" },
             { icon: <TrendingDown className="w-6 h-6" />, title: "What-If Simulation", description: "See your future impact with interactive timelines before you commit.", color: "#0B3B2A" },
             { icon: <Award className="w-6 h-6" />, title: "Rewards & Badges", description: "Gamified sustainability journey with achievements, streaks, and leaderboards.", color: "#8B5A2B" },
           ].map((feat, i) => (
-            <FeatureCard key={i} {...feat} delay={i * 0.1} />
+            <div key={i} className="w-full max-w-sm flex">
+              <FeatureCard {...feat} delay={i * 0.1} />
+            </div>
           ))}
         </div>
       </section>
 
-      {/* ── Testimonials ── */}
-      <section className="py-24 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
-        <div className="text-center mb-16">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm font-medium mb-4"
-          >
-            <Star className="w-4 h-4 fill-amber-500 text-amber-500" /> Loved by Thousands
-          </motion.div>
-          <h2 className="text-3xl sm:text-4xl font-black mb-4">
-            Real People, Real <span className="text-[#6BAA75] dark:text-[#4CD964]">Results</span>
-          </h2>
-          <p className="text-muted-foreground">Join a community of eco-conscious individuals making a difference.</p>
-        </div>
 
-        {/* Testimonial Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
-          {mockTestimonials.slice(0, 6).map((t, i) => (
-            <TestimonialCard key={i} testimonial={t} active={i === activeTestimonial} />
-          ))}
-        </div>
-
-        {/* Dots */}
-        <div className="flex justify-center gap-2">
-          {mockTestimonials.slice(0, 6).map((_, i) => (
-            <button
-              key={i}
-              onClick={() => setActiveTestimonial(i)}
-              className={`rounded-full transition-all duration-300 ${i === activeTestimonial ? "w-6 h-2 bg-[#6BAA75] dark:bg-[#4CD964]" : "w-2 h-2 bg-muted-foreground/30"}`}
-            />
-          ))}
-        </div>
-      </section>
-
-      {/* ── Partner Logos ── */}
-      <section className="py-12 px-4 bg-muted/20 border-y border-border">
-        <div className="max-w-4xl mx-auto">
-          <p className="text-center text-xs uppercase tracking-widest text-muted-foreground mb-8">Trusted by leading climate organizations</p>
-          <div className="flex flex-wrap justify-center gap-8">
-            {mockPartners.map((p) => (
-              <div key={p.abbrev} className="flex items-center gap-2 opacity-50 hover:opacity-80 transition-opacity">
-                <div className="w-8 h-8 rounded-full bg-[#6BAA75]/20 flex items-center justify-center">
-                  <Wind className="w-4 h-4 text-[#6BAA75]" />
-                </div>
-                <span className="font-semibold text-sm text-muted-foreground">{p.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
 
       {/* ── CTA Section ── */}
       <section className="py-24 px-4">

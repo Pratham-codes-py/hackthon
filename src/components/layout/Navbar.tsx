@@ -38,6 +38,7 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [user, setUser] = useState<SupabaseUser | null>(null);
+  const [userName, setUserName] = useState('');
   const [loading, setLoading] = useState(true);
 
   const unreadCount = mockNotifications.filter((n) => !n.read).length;
@@ -46,25 +47,48 @@ export default function Navbar() {
     setMounted(true);
     const handleScroll = () => setScrolled(window.scrollY > 20);
     window.addEventListener("scroll", handleScroll);
-    
+
+    // Initial name from storage
+    const storedName = localStorage.getItem("userName") || localStorage.getItem("userEmail")?.split("@")[0] || '';
+    setUserName(storedName);
+
     // Check user session
     const checkUser = async () => {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
       setUser(user);
+      // Store Google display name for other components (like Profile) to read
+      if (user) {
+        const name = user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || '';
+        if (name) {
+          localStorage.setItem("userName", name);
+          setUserName(name);
+        }
+        if (user.email) localStorage.setItem("userEmail", user.email);
+      }
+
       setLoading(false);
-      
+
       // Listen for auth changes
       const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user ?? null);
+        const sUser = session?.user ?? null;
+        setUser(sUser);
+        if (sUser) {
+          const name = sUser.user_metadata?.full_name || sUser.user_metadata?.name || sUser.email?.split('@')[0] || '';
+          if (name) {
+            localStorage.setItem("userName", name);
+            setUserName(name);
+          }
+          if (sUser.email) localStorage.setItem("userEmail", sUser.email);
+        }
         setLoading(false);
       });
-      
+
       return () => subscription.unsubscribe();
     };
-    
+
     checkUser();
-    
+
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
@@ -82,11 +106,10 @@ export default function Navbar() {
       initial={{ y: -100 }}
       animate={{ y: 0 }}
       transition={{ duration: 0.5, ease: "easeOut" }}
-      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
-        scrolled || !isLanding
-          ? "bg-background/95 backdrop-blur-md border-b border-border shadow-sm"
-          : "bg-transparent"
-      }`}
+      className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${scrolled || !isLanding
+        ? "bg-background/95 backdrop-blur-md border-b border-border shadow-sm"
+        : "bg-transparent"
+        }`}
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
@@ -110,13 +133,12 @@ export default function Navbar() {
               <Link
                 key={link.href}
                 href={link.href}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                  pathname === link.href
-                    ? "bg-primary/10 text-primary dark:text-[#4CD964]"
-                    : isLanding && !scrolled
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${pathname === link.href
+                  ? "bg-primary/10 text-primary dark:text-[#4CD964]"
+                  : isLanding && !scrolled
                     ? "text-white/80 hover:text-white hover:bg-white/10"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                }`}
+                  }`}
               >
                 {navIcons[link.href]}
                 {link.label}
@@ -169,14 +191,14 @@ export default function Navbar() {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="flex items-center gap-2 p-2 h-auto rounded-full">
                   <div className="w-8 h-8 rounded-full bg-[#6BAA75] dark:bg-[#4CD964] flex items-center justify-center text-white dark:text-[#0A1F18] font-bold text-sm">
-                    {user?.email?.charAt(0).toUpperCase() || 'U'}
+                    {(userName || 'User').charAt(0).toUpperCase()}
                   </div>
                   <ChevronDown className="w-4 h-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <div className="px-2 py-1.5 text-sm">
-                  <div className="font-medium">{user?.email || 'User'}</div>
+                  <div className="font-medium">{userName || 'User'}</div>
                   <p className="text-xs text-muted-foreground">{user?.email}</p>
                 </div>
                 <DropdownMenuSeparator />
@@ -234,11 +256,10 @@ export default function Navbar() {
                   key={link.href}
                   href={link.href}
                   onClick={() => setMobileOpen(false)}
-                  className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                    pathname === link.href
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
+                  className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${pathname === link.href
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                    }`}
                 >
                   {navIcons[link.href]}
                   {link.label}

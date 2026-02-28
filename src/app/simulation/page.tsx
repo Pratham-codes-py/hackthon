@@ -52,7 +52,7 @@ function generateSimData(totalSavings: number, adoptionMonths: number, enableStr
     const stretchVal = Math.max(baseline - stretchSavings * eased, baseline * 0.2);
     return {
       month,
-      baseline: parseFloat((baseline + i * 0.1).toFixed(2)),
+      baseline: parseFloat(baseline.toFixed(2)),
       withStrategies: parseFloat(withStrat.toFixed(2)),
       stretch: enableStretch ? parseFloat(stretchVal.toFixed(2)) : undefined,
     };

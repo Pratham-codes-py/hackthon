@@ -81,10 +81,15 @@ Rules: be specific and actionable; reference the user's numbers or habits when r
             const msg1 = firstErr instanceof Error ? firstErr.message : String(firstErr);
             const is429 = msg1.includes('429') || msg1.toLowerCase().includes('quota') || msg1.toLowerCase().includes('rate');
             if (is429) {
-                // Wait the amount the API tells us, then retry exactly once
                 const delay = parseRetryDelay(msg1);
-                await new Promise(r => setTimeout(r, delay));
-                reply = await callGemini(); // throws if it fails again → caught below
+                // Only retry for short per-minute limits (≤30s).
+                // Daily quotas have delays of 60s+ — retrying is pointless and just hangs the request.
+                if (delay <= 30000) {
+                    await new Promise(r => setTimeout(r, delay));
+                    reply = await callGemini();
+                } else {
+                    throw firstErr; // Daily quota — fail fast, don't wait
+                }
             } else {
                 throw firstErr;
             }

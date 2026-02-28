@@ -18,7 +18,7 @@ interface FootprintData {
     previousTotal?: number;
 }
 
-const STORAGE_KEY = "aiChatHistory_v2";
+const STORAGE_KEY = "aiChatHistory_v3";
 const MAX_STORED = 40;
 
 const QUICK_QUESTIONS = [
@@ -130,23 +130,8 @@ export default function AIChat({
         });
 
         try {
-            let res = await doFetch();
-            let data = await res.json();
-
-            // Auto-retry once on 429 — wait the time the server tells us
-            if (res.status === 429 && data.retryAfter) {
-                const waitSec = data.retryAfter as number;
-                // Show countdown in typing indicator area via a temporary message
-                setMessages(prev => [...prev, {
-                    role: "assistant",
-                    content: `⏳ Gemini is busy — auto-retrying in ${waitSec}s…`,
-                }]);
-                await new Promise(r => setTimeout(r, waitSec * 1000));
-                // Remove the temporary message and retry
-                setMessages(prev => prev.slice(0, -1));
-                res = await doFetch();
-                data = await res.json();
-            }
+            const res = await doFetch();
+            const data = await res.json();
 
             const assistantMsg: Message = {
                 role: "assistant",
