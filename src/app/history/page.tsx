@@ -1,18 +1,19 @@
 "use client";
 import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  Legend, ResponsiveContainer, AreaChart, Area
-} from "recharts";
+import { motion } from "framer-motion";
 import {
   Calendar, TrendingDown, TrendingUp, Star, AlertCircle,
   ChevronRight, BarChart2, Brain, Filter
 } from "lucide-react";
 import Navbar from "@/components/layout/Navbar";
-import { mockFootprintHistory, mockChartData } from "@/lib/mock-data";
+import { db, auth } from "@/lib/firebase/config";
+import { collection, query, where, orderBy, onSnapshot } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 
-// Generate calendar days with mock data
+// ─── Calendar helpers ─────────────────────────────────────────────────────────
+// Streak days: Feb 27 and Feb 28 (today) are the only colored days
+const STREAK_DAYS = new Set([27, 28]);
+
 function generateCalendarDays() {
   const today = new Date();
   const year = today.getFullYear();
@@ -23,77 +24,152 @@ function generateCalendarDays() {
   const days: Array<{ day: number; level: "none" | "low" | "medium" | "high" | "today"; value?: number }> = [];
   for (let i = 0; i < firstDay; i++) days.push({ day: 0, level: "none" });
   for (let d = 1; d <= daysInMonth; d++) {
-    // Use deterministic pseudo-random based on day to avoid hydration mismatch
-    const seed = d * 9301 + 49297;
-    const rnd = (seed % 23480) / 23480; // Normalize to 0-1
-    const level = d > today.getDate() ? "none" : d === today.getDate() ? "today" : rnd < 0.35 ? "low" : rnd < 0.65 ? "medium" : "high";
-    days.push({ day: d, level, value: level !== "none" && level !== "today" ? parseFloat((0.025 + rnd * 0.01).toFixed(3)) : undefined });
+    let level: "none" | "low" | "medium" | "high" | "today";
+    if (d > today.getDate()) {
+      level = "none"; // future
+    } else if (d === today.getDate()) {
+      level = "today"; // today (Feb 28)
+    } else if (STREAK_DAYS.has(d)) {
+      level = "low"; // streak day (Feb 27) — green
+    } else {
+      level = "none"; // all other past days — grey/transparent
+    }
+    days.push({
+      day: d,
+      level,
+      value: level === "low" ? 0.028 : undefined,
+    });
   }
   return days;
 }
 
 const LEVEL_COLORS: Record<string, string> = {
-  none: "bg-transparent",
+  none: "bg-muted/30 text-muted-foreground/40",
   low: "bg-[#4CD964]/70",
   medium: "bg-amber-400/80",
   high: "bg-red-500/80",
   today: "bg-[#0B3B2A] dark:bg-[#4CD964] ring-2 ring-[#4CD964] ring-offset-1",
 };
 
-// Stacked bar data
-const stackedData = mockFootprintHistory.map((e) => ({
-  month: new Date(e.date).toLocaleDateString("en-US", { month: "short" }),
-  Transport: e.transport,
-  Energy: e.energy,
-  Diet: e.diet,
-  Waste: e.waste,
-}));
-
-const STACK_COLORS = {
-  Transport: "#2D7D4A",
-  Energy: "#6BAA75",
-  Diet: "#8B5A2B",
-  Waste: "#0B3B2A",
-};
-
-function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ name: string; value: number; fill: string }>; label?: string }) {
-  if (active && payload && payload.length) {
-    const total = payload.reduce((a, p) => a + p.value, 0);
-    return (
-      <div className="bg-card border border-border rounded-xl p-3 shadow-lg">
-        <p className="font-semibold text-xs text-muted-foreground mb-2">{label}</p>
-        <p className="font-bold text-sm mb-2">{total.toFixed(2)} tCO₂e total</p>
-        {payload.map((p) => (
-          <div key={p.name} className="flex items-center gap-2 text-xs mb-0.5">
-            <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: p.fill }} />
-            <span className="text-muted-foreground">{p.name}:</span>
-            <span className="font-medium">{p.value.toFixed(2)}t</span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return null;
+// ─── Relative time ────────────────────────────────────────────────────────────
+function timeAgo(dateStr: string): string {
+  const now = new Date();
+  const date = new Date(dateStr);
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.round(diffMs / 60000);
+  const diffHours = Math.round(diffMs / 3600000);
+  const diffDays = Math.round(diffMs / 86400000);
+  if (diffMins < 2) return "Just now";
+  if (diffMins < 60) return `${diffMins} minutes ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  return date.toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" });
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface FootprintEntry {
+  total: number;
+  transport: number;
+  energy: number;
+  diet: number;
+  waste: number;
+  timestamp?: string;
+  createdAt?: Date;
+  userId?: string;
+  userName?: string;
+  userEmail?: string;
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function HistoryPage() {
   const [hoveredDay, setHoveredDay] = useState<number | null>(null);
-  const [compareLastYear, setCompareLastYear] = useState(false);
   const [calendarDays, setCalendarDays] = useState<Array<{ day: number; level: "none" | "low" | "medium" | "high" | "today"; value?: number }>>([]);
+  const [footprintHistory, setFootprintHistory] = useState<FootprintEntry[]>([]);
+  const [userId, setUserId] = useState<string | undefined>(undefined);
 
+  // Generate calendar once on client
   useEffect(() => {
     setCalendarDays(generateCalendarDays());
   }, []);
 
-  const bestMonth = mockFootprintHistory.reduce((a, b) => a.total < b.total ? a : b);
-  const worstCategory = "Energy"; // Mock
-  const avgReduction = 3.7;
+  // Firebase auth
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => setUserId(user?.uid));
+    return unsub;
+  }, []);
 
-  // Long-term chart data (all time)
-  const allTimeData = mockChartData.map((d) => ({
-    ...d,
-    value: d.historical ?? d.projected,
-  }));
+  // Load from localStorage (primary)
+  useEffect(() => {
+    const load = () => {
+      const raw = localStorage.getItem("footprintHistory");
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // newest-first
+            setFootprintHistory([...parsed].reverse());
+          }
+        } catch { /* ignore */ }
+      }
+    };
+    load();
+    const interval = setInterval(load, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Firebase real-time (supplement)
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      const ref = collection(db, "footprints");
+      const q = query(ref, where("userId", "==", userId), orderBy("createdAt", "desc"));
+      const unsub = onSnapshot(q, (snap) => {
+        if (snap.empty) return;
+        const docs = snap.docs.map((d) => ({
+          ...d.data(),
+          createdAt: d.data().createdAt?.toDate(),
+        })) as FootprintEntry[];
+        setFootprintHistory(docs);
+      }, () => { /* ignore */ });
+      return unsub;
+    } catch { /* Firebase unavailable */ }
+  }, [userId]);
+
+  // ── Computed insights from real data ──────────────────────────────────────
+  const hasData = footprintHistory.length > 0;
+  const latestEntry = footprintHistory[0];
+  const oldest = footprintHistory[footprintHistory.length - 1];
+
+  // Best entry (lowest total)
+  const bestEntry = hasData
+    ? footprintHistory.reduce((a, b) => a.total < b.total ? a : b)
+    : null;
+
+  // Worst category in latest entry
+  const worstCategory = hasData && latestEntry
+    ? (["transport", "energy", "diet", "waste"] as const).reduce(
+      (a, b) => (latestEntry[a] ?? 0) > (latestEntry[b] ?? 0) ? a : b
+    )
+    : "energy";
+
+  // Avg reduction per submission
+  const avgReduction = hasData && footprintHistory.length >= 2
+    ? (((oldest?.total ?? 0) - (latestEntry?.total ?? 0)) / (footprintHistory.length - 1))
+    : 0;
+
+  // Transport reduction %
+  const transportReduction = hasData && footprintHistory.length >= 2 && oldest?.transport
+    ? Math.round(((oldest.transport - (latestEntry?.transport ?? 0)) / oldest.transport) * 100)
+    : 0;
+
+  // vs Indian avg (1.5 t/yr per capita)
+  const INDIAN_AVG = 1.5;
+  const vsDiff = hasData && latestEntry
+    ? Math.round(((INDIAN_AVG - latestEntry.total) / INDIAN_AVG) * 100)
+    : 0;
+
+  const currentMonth = new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" });
 
   return (
     <div className="min-h-screen bg-background">
@@ -109,7 +185,7 @@ export default function HistoryPage() {
             className="text-3xl font-black flex items-center gap-3"
           >
             <Calendar className="w-8 h-8 text-[#6BAA75]" />
-            History & Insights
+            History &amp; Insights
           </motion.h1>
           <p className="text-muted-foreground mt-1">Your full sustainability record and AI-generated insights</p>
         </div>
@@ -122,7 +198,7 @@ export default function HistoryPage() {
             {/* Calendar */}
             <div className="bg-card border border-border rounded-3xl p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="font-bold">February 2026</h2>
+                <h2 className="font-bold">{currentMonth}</h2>
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">
                   <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-[#4CD964]/70" /> Low</div>
                   <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-amber-400/80" /> Medium</div>
@@ -130,14 +206,12 @@ export default function HistoryPage() {
                 </div>
               </div>
 
-              {/* Day headers */}
               <div className="grid grid-cols-7 mb-2">
                 {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
                   <div key={d} className="text-center text-xs text-muted-foreground font-medium py-1">{d}</div>
                 ))}
               </div>
 
-              {/* Calendar grid */}
               <div className="grid grid-cols-7 gap-1.5">
                 {calendarDays.map((day, i) => (
                   <div
@@ -164,7 +238,7 @@ export default function HistoryPage() {
               </div>
             </div>
 
-            {/* Detailed history table */}
+            {/* Detailed history table — real data */}
             <div className="bg-card border border-border rounded-3xl overflow-hidden">
               <div className="flex items-center justify-between p-5 border-b border-border">
                 <h2 className="font-bold">Detailed History</h2>
@@ -172,114 +246,78 @@ export default function HistoryPage() {
                   <Filter className="w-3.5 h-3.5" /> Filter
                 </button>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      {["Month", "Total", "Transport", "Energy", "Diet", "Waste", "Change"].map((h) => (
-                        <th key={h} className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {[...mockFootprintHistory].reverse().map((entry, i, arr) => {
-                      const prev = arr[i + 1];
-                      const change = prev ? ((entry.total - prev.total) / prev.total) * 100 : 0;
-                      return (
-                        <motion.tr
-                          key={entry.id}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: i * 0.05 }}
-                          className="hover:bg-muted/30 transition-colors cursor-pointer"
-                        >
-                          <td className="px-4 py-3 font-medium">
-                            {new Date(entry.date).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
-                          </td>
-                          <td className="px-4 py-3 font-bold">{entry.total.toFixed(1)}t</td>
-                          <td className="px-4 py-3 text-muted-foreground">{entry.transport.toFixed(1)}t</td>
-                          <td className="px-4 py-3 text-muted-foreground">{entry.energy.toFixed(1)}t</td>
-                          <td className="px-4 py-3 text-muted-foreground">{entry.diet.toFixed(1)}t</td>
-                          <td className="px-4 py-3 text-muted-foreground">{entry.waste.toFixed(1)}t</td>
-                          <td className="px-4 py-3">
-                            {change !== 0 && (
-                              <span className={`font-semibold text-xs ${change < 0 ? "text-[#4CD964]" : "text-red-500"}`}>
-                                {change < 0 ? "↓" : "↑"} {Math.abs(change).toFixed(1)}%
-                              </span>
-                            )}
-                          </td>
-                        </motion.tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
 
-            {/* Progress Charts */}
-            <div className="space-y-6">
-              {/* All time line */}
-              <div className="bg-card border border-border rounded-3xl p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h2 className="font-bold">All-Time Trend</h2>
-                    <p className="text-xs text-muted-foreground">Your footprint journey from the start</p>
-                  </div>
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                    <input type="checkbox" checked={compareLastYear} onChange={(e) => setCompareLastYear(e.target.checked)} className="rounded" />
-                    Compare last year
-                  </label>
+              {!hasData ? (
+                <div className="p-10 text-center text-muted-foreground">
+                  <div className="text-4xl mb-3">📋</div>
+                  <p className="font-semibold">No submissions yet</p>
+                  <p className="text-sm mt-1">Complete the footprint form to see your history here.</p>
+                  <a href="/input" className="inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-xl bg-[#4CD964]/10 text-[#4CD964] border border-[#4CD964]/20 text-sm font-medium hover:bg-[#4CD964]/20 transition-colors">
+                    Calculate my footprint →
+                  </a>
                 </div>
-                <ResponsiveContainer width="100%" height={200}>
-                  <AreaChart data={allTimeData}>
-                    <defs>
-                      <linearGradient id="allTimeGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#6BAA75" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#6BAA75" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis dataKey="month" tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}t`} />
-                    <Tooltip formatter={(v: number | undefined) => [`${v?.toFixed(2) ?? "0.00"}t`, "Footprint"]} />
-                    <Area type="monotone" dataKey="value" stroke="#6BAA75" strokeWidth={2.5} fill="url(#allTimeGrad)" dot={{ r: 3, fill: "#6BAA75" }} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Stacked breakdown */}
-              <div className="bg-card border border-border rounded-3xl p-6">
-                <h2 className="font-bold mb-1">Category Breakdown Over Time</h2>
-                <p className="text-xs text-muted-foreground mb-4">How each category has evolved month by month</p>
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={stackedData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis dataKey="month" tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}t`} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend wrapperStyle={{ fontSize: "11px" }} />
-                    {(Object.keys(STACK_COLORS) as Array<keyof typeof STACK_COLORS>).map((key) => (
-                      <Bar key={key} dataKey={key} stackId="a" fill={STACK_COLORS[key]} radius={key === "Waste" ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        {["Date", "Total", "Transport", "Energy", "Diet", "Waste", "Change"].map((h) => (
+                          <th key={h} className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {footprintHistory.map((entry, i) => {
+                        const prev = footprintHistory[i + 1];
+                        const change = prev ? ((entry.total - prev.total) / prev.total) * 100 : 0;
+                        const dateLabel = entry.timestamp
+                          ? new Date(entry.timestamp).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                          : entry.createdAt
+                            ? new Date(entry.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                            : "Recent";
+                        return (
+                          <motion.tr
+                            key={entry.timestamp || i}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: i * 0.05 }}
+                            className={`hover:bg-muted/30 transition-colors cursor-pointer ${i === 0 ? "bg-[#4CD964]/5" : ""}`}
+                          >
+                            <td className="px-4 py-3 font-medium">
+                              <div className="flex items-center gap-2">
+                                {i === 0 && (
+                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-[#4CD964]/20 text-[#4CD964] border border-[#4CD964]/30">
+                                    Latest
+                                  </span>
+                                )}
+                                <span>{dateLabel}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 font-bold">{Number(entry.total).toFixed(2)}t</td>
+                            <td className="px-4 py-3 text-muted-foreground">{Number(entry.transport).toFixed(2)}t</td>
+                            <td className="px-4 py-3 text-muted-foreground">{Number(entry.energy).toFixed(2)}t</td>
+                            <td className="px-4 py-3 text-muted-foreground">{Number(entry.diet).toFixed(2)}t</td>
+                            <td className="px-4 py-3 text-muted-foreground">{Number(entry.waste).toFixed(2)}t</td>
+                            <td className="px-4 py-3">
+                              {change !== 0 && (
+                                <span className={`font-semibold text-xs ${change < 0 ? "text-[#4CD964]" : "text-red-500"}`}>
+                                  {change < 0 ? "↓" : "↑"} {Math.abs(change).toFixed(1)}%
+                                </span>
+                              )}
+                            </td>
+                          </motion.tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Right column: Insights */}
           <div className="space-y-5">
 
-            {/* AI Summary */}
-            <div className="bg-gradient-to-br from-[#0B3B2A] to-[#2D7D4A] rounded-2xl p-5 text-white">
-              <div className="flex items-center gap-2 mb-3">
-                <Brain className="w-5 h-5 text-[#4CD964]" />
-                <span className="font-bold text-sm">AI Summary</span>
-              </div>
-              <p className="text-white/80 text-sm leading-relaxed">
-                You're doing <span className="text-[#4CD964] font-semibold">great with transport</span> — a {avgReduction}% reduction over 6 months! Your next focus should be <span className="text-amber-300 font-semibold">home energy</span>, which remains above average. Try the smart thermostat tip.
-              </p>
-            </div>
 
             {/* Your Biggest Wins */}
             <div className="bg-card border border-border rounded-2xl p-5">
@@ -288,27 +326,43 @@ export default function HistoryPage() {
                 <h3 className="font-bold">Your Biggest Wins</h3>
               </div>
               <div className="space-y-3">
-                <div className="flex items-center gap-3 p-3 rounded-xl bg-[#4CD964]/10 border border-[#4CD964]/20">
-                  <span className="text-2xl">🏆</span>
-                  <div>
-                    <p className="font-semibold text-sm text-[#4CD964]">Best Month</p>
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(bestMonth.date).toLocaleDateString("en-US", { month: "long" })} at only {bestMonth.total.toFixed(1)}t CO₂
-                    </p>
+                {bestEntry ? (
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-[#4CD964]/10 border border-[#4CD964]/20">
+                    <span className="text-2xl">🏆</span>
+                    <div>
+                      <p className="font-semibold text-sm text-[#4CD964]">Best Submission</p>
+                      <p className="text-xs text-muted-foreground">
+                        {bestEntry.timestamp
+                          ? new Date(bestEntry.timestamp).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+                          : "Recent"} — only {Number(bestEntry.total).toFixed(1)}t CO₂
+                      </p>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-[#4CD964]/10 border border-[#4CD964]/20">
+                    <span className="text-2xl">🏆</span>
+                    <div>
+                      <p className="font-semibold text-sm text-[#4CD964]">Best Month</p>
+                      <p className="text-xs text-muted-foreground">Submit your footprint to see this</p>
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center gap-3 p-3 rounded-xl bg-[#6BAA75]/10 border border-[#6BAA75]/20">
                   <span className="text-2xl">🚌</span>
                   <div>
                     <p className="font-semibold text-sm">Transport Hero</p>
-                    <p className="text-xs text-muted-foreground">Reduced transport by 17% in 6 months</p>
+                    <p className="text-xs text-muted-foreground">
+                      {transportReduction > 0
+                        ? `Reduced transport by ${transportReduction}% from your first entry`
+                        : "Keep logging to track your transport progress"}
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
                   <span className="text-2xl">🔥</span>
                   <div>
-                    <p className="font-semibold text-sm">12 Day Streak</p>
-                    <p className="text-xs text-muted-foreground">Logging activity consistently</p>
+                    <p className="font-semibold text-sm">🔥 2 Day Streak</p>
+                    <p className="text-xs text-muted-foreground">Feb 27 &amp; 28 — keep it going!</p>
                   </div>
                 </div>
               </div>
@@ -324,34 +378,60 @@ export default function HistoryPage() {
                 <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30">
                   <div className="flex items-center gap-2 mb-1">
                     <TrendingUp className="w-4 h-4 text-amber-500" />
-                    <p className="font-semibold text-sm">{worstCategory}</p>
+                    <p className="font-semibold text-sm capitalize">{hasData ? worstCategory : "Energy"}</p>
                   </div>
-                  <p className="text-xs text-muted-foreground">Home energy has only decreased 2% — well below average. Consider scheduling an energy audit.</p>
-                  <button className="mt-2 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 font-medium hover:underline">
+                  <p className="text-xs text-muted-foreground">
+                    {hasData && latestEntry
+                      ? `Your ${worstCategory} footprint is ${Number((latestEntry as any)[worstCategory]).toFixed(2)}t — your highest category. Consider targeted reductions here.`
+                      : "Home energy has only decreased 2% — well below average. Consider scheduling an energy audit."}
+                  </p>
+                  <a href="/suggestions" className="mt-2 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 font-medium hover:underline">
                     See suggestions <ChevronRight className="w-3 h-3" />
-                  </button>
+                  </a>
                 </div>
                 <div className="p-3 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/30">
                   <div className="flex items-center gap-2 mb-1">
                     <AlertCircle className="w-4 h-4 text-red-500" />
-                    <p className="font-semibold text-sm">Diet stagnating</p>
+                    <p className="font-semibold text-sm">Diet impact</p>
                   </div>
-                  <p className="text-xs text-muted-foreground">Your diet footprint hasn't improved in 3 months. Plant-Based Mondays could restart progress.</p>
+                  <p className="text-xs text-muted-foreground">
+                    {hasData && latestEntry
+                      ? `Diet accounts for ${Number(latestEntry.diet).toFixed(2)}t of your footprint. Plant-Based Mondays could make a big difference.`
+                      : "Your diet footprint hasn't improved in 3 months. Plant-Based Mondays could restart progress."}
+                  </p>
                 </div>
               </div>
             </div>
 
-            {/* Monthly comparison stats */}
+            {/* Quick Stats */}
             <div className="bg-card border border-border rounded-2xl p-5">
               <h3 className="font-bold mb-3 flex items-center gap-2">
                 <BarChart2 className="w-4 h-4 text-[#6BAA75]" />
                 Quick Stats
               </h3>
               {[
-                { label: "6-month avg reduction", value: "-3.7%/mo", positive: true },
-                { label: "Lowest footprint month", value: `Feb '26 (${bestMonth.total}t)`, positive: true },
-                { label: "Total entries logged", value: "6 months", positive: null },
-                { label: "vs. US average (16t/yr)", value: "-34% better", positive: true },
+                {
+                  label: "Avg reduction/submission",
+                  value: hasData && avgReduction > 0 ? `-${avgReduction.toFixed(2)}t` : "—",
+                  positive: hasData && avgReduction > 0 ? true : null,
+                },
+                {
+                  label: "Best submission",
+                  value: bestEntry ? `${Number(bestEntry.total).toFixed(1)}t` : "—",
+                  positive: true,
+                },
+                {
+                  label: "Total entries logged",
+                  value: hasData ? `${footprintHistory.length} submission${footprintHistory.length > 1 ? "s" : ""}` : "0",
+                  positive: null,
+                },
+                {
+                  label: "vs. Indian avg (1.5t/yr)",
+                  value: hasData && latestEntry
+                    ? vsDiff > 0 ? `+${vsDiff}% above` : `${Math.abs(vsDiff)}% below`
+                    : "—",
+                  positive: hasData && vsDiff <= 0 ? true : false,
+                },
               ].map(({ label, value, positive }) => (
                 <div key={label} className="flex items-center justify-between py-2 border-b border-border last:border-0">
                   <span className="text-xs text-muted-foreground">{label}</span>
@@ -361,9 +441,11 @@ export default function HistoryPage() {
                 </div>
               ))}
             </div>
+
           </div>
         </div>
       </div>
     </div>
   );
 }
+

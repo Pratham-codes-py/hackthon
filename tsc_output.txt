@@ -1,0 +1,11 @@
+﻿src/components/ErrorReporter.tsx(14,19): error TS2554: Expected 1 arguments, but got 0.
+src/components/ui/chart.tsx(109,3): error TS2339: Property 'payload' does not exist on type 'Omit<Props<ValueType, NameType>, PropertiesReadFromContext> & { active?: boolean | undefined; allowEscapeViewBox?: AllowInDimension | undefined; ... 24 more ...; wrapperStyle?: CSSProperties | undefined; } & ClassAttributes<...> & HTMLAttributes<...> & { ...; }'.
+src/components/ui/chart.tsx(114,3): error TS2339: Property 'label' does not exist on type 'Omit<Props<ValueType, NameType>, PropertiesReadFromContext> & { active?: boolean | undefined; allowEscapeViewBox?: AllowInDimension | undefined; ... 24 more ...; wrapperStyle?: CSSProperties | undefined; } & ClassAttributes<...> & HTMLAttributes<...> & { ...; }'.
+src/components/ui/chart.tsx(182,23): error TS7006: Parameter 'item' implicitly has an 'any' type.
+src/components/ui/chart.tsx(182,29): error TS7006: Parameter 'index' implicitly has an 'any' type.
+src/components/ui/chart.tsx(260,39): error TS2344: Type '"verticalAlign" | "payload"' does not satisfy the constraint '"string" | "name" | "path" | "href" | "origin" | "layout" | "filter" | "fill" | "values" | "children" | "style" | "clipPath" | "mask" | "className" | "fontSize" | "color" | "fontWeight" | ... 429 more ... | "portal"'.
+  Type '"payload"' is not assignable to type '"string" | "name" | "path" | "href" | "origin" | "layout" | "filter" | "fill" | "values" | "children" | "style" | "clipPath" | "mask" | "className" | "fontSize" | "color" | "fontWeight" | ... 429 more ... | "portal"'.
+src/components/ui/chart.tsx(266,17): error TS2339: Property 'length' does not exist on type '{}'.
+src/components/ui/chart.tsx(278,16): error TS2339: Property 'map' does not exist on type '{}'.
+src/components/ui/chart.tsx(278,21): error TS7006: Parameter 'item' implicitly has an 'any' type.
+

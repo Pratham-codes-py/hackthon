@@ -36,20 +36,30 @@ function BadgeCard({ badge }: { badge: Badge }) {
       whileHover={{ y: -3, scale: 1.02 }}
       onClick={() => setShowDetails(!showDetails)}
       className={`relative p-4 rounded-2xl border-2 cursor-pointer transition-all duration-200 ${badge.unlocked
-        ? `border-transparent bg-gradient-to-br ${RARITY_BG[badge.rarity]}`
-        : "border-border bg-muted/30 opacity-60"
+          ? `border-transparent bg-gradient-to-br ${RARITY_BG[badge.rarity]}`
+          : "border-border bg-muted/30 opacity-60"
         }`}
       style={badge.unlocked ? { borderColor: `${color}30` } : {}}
     >
-      <div className="absolute top-2 right-2 w-2 h-2 rounded-full" style={{ backgroundColor: badge.unlocked ? color : "#94a3b8" }} />
+      {/* Rarity pill top-right */}
+      <div
+        className="absolute top-2 right-2 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-full"
+        style={{ backgroundColor: `${color}20`, color, border: `1px solid ${color}40` }}
+      >
+        {badge.rarity}
+      </div>
+
       {!badge.unlocked && (
         <div className="absolute inset-0 flex items-center justify-center rounded-2xl">
           <Lock className="w-4 h-4 text-muted-foreground/50" />
         </div>
       )}
       <div className={`text-3xl mb-2 ${!badge.unlocked ? "grayscale opacity-30" : ""}`}>{badge.icon}</div>
-      <h4 className="font-bold text-xs mb-0.5">{badge.name}</h4>
+      <h4 className="font-bold text-xs mb-0.5 pr-10">{badge.name}</h4>
       <p className="text-xs text-muted-foreground leading-tight">{badge.description}</p>
+      {/* Category label */}
+      <p className="text-[9px] uppercase tracking-widest text-muted-foreground/60 mt-1 font-semibold">{badge.category.replace("-", " ")}</p>
+
       {hasProgress && !badge.unlocked && (
         <div className="mt-2">
           <div className="flex justify-between text-xs text-muted-foreground mb-1">

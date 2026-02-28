@@ -18,13 +18,17 @@ interface FootprintData {
     previousTotal?: number;
 }
 
-const STORAGE_KEY = "aiChatHistory";
-const MAX_STORED = 40; // keep last 40 messages (20 turns) in localStorage
+const STORAGE_KEY = "aiChatHistory_v2";
+const MAX_STORED = 40;
 
 const QUICK_QUESTIONS = [
-    "Where do I use the most carbon?",
+    "Where do I have the biggest carbon impact?",
     "How can I reduce my transport emissions?",
-    "What if I switched to a vegan diet?",
+    "What are easy lifestyle habits to lower my footprint?",
+    "How does my diet affect my carbon footprint?",
+    "What if I cycle instead of driving?",
+    "Tips to save energy at home?",
+    "How do my daily habits compare to the Indian average?",
     "Give me one simple change I can make today.",
 ];
 
@@ -59,49 +63,51 @@ function makeWelcome(footprint?: FootprintData): Message {
     };
 }
 
-export default function AIChat({ footprint }: { footprint?: FootprintData }) {
+export default function AIChat({
+    footprint,
+    habitDescription,
+}: {
+    footprint?: FootprintData;
+    habitDescription?: string;
+}) {
     const [messages, setMessages] = useState<Message[]>([makeWelcome(footprint)]);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const messagesContainerRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
-    // ── Load history from localStorage on mount ────────────────────────────
+    // Load history from localStorage on mount
     useEffect(() => {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) {
                 const stored: Message[] = JSON.parse(raw);
                 if (Array.isArray(stored) && stored.length > 0) {
-                    // Prepend the welcome greeting before the stored history
                     setMessages([makeWelcome(footprint), ...stored]);
                 }
             }
         } catch {
-            // ignore parse errors — start fresh
+            // ignore parse errors
         }
-        // Only run once on mount
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // ── Persist history to localStorage whenever messages change ──────────
+    // Persist to localStorage
     useEffect(() => {
         try {
-            // Skip index 0 (welcome message — it's UI chrome, not history)
             const toStore = messages.slice(1).slice(-MAX_STORED);
             localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
         } catch {
-            // quota exceeded or SSR — ignore
+            // quota exceeded or SSR
         }
     }, [messages]);
 
-    // ── Auto-scroll message box ────────────────────────────────────────────
+    // Auto-scroll
     useEffect(() => {
         const el = messagesContainerRef.current;
         if (el) el.scrollTop = el.scrollHeight;
     }, [messages, isLoading]);
 
-    // ── Send a message ─────────────────────────────────────────────────────
     const sendMessage = useCallback(async (text?: string) => {
         const messageText = (text ?? input).trim();
         if (!messageText || isLoading) return;
@@ -112,25 +118,43 @@ export default function AIChat({ footprint }: { footprint?: FootprintData }) {
         setInput("");
         setIsLoading(true);
 
+        const doFetch = () => fetch("/api/ai/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                message: messageText,
+                footprint,
+                habitDescription,
+                history: updatedMessages,
+            }),
+        });
+
         try {
-            const res = await fetch("/api/ai/chat", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    message: messageText,
-                    footprint,
-                    // Send full conversation history so Gemini has context
-                    history: updatedMessages,
-                }),
-            });
-            const data = await res.json();
+            let res = await doFetch();
+            let data = await res.json();
+
+            // Auto-retry once on 429 — wait the time the server tells us
+            if (res.status === 429 && data.retryAfter) {
+                const waitSec = data.retryAfter as number;
+                // Show countdown in typing indicator area via a temporary message
+                setMessages(prev => [...prev, {
+                    role: "assistant",
+                    content: `⏳ Gemini is busy — auto-retrying in ${waitSec}s…`,
+                }]);
+                await new Promise(r => setTimeout(r, waitSec * 1000));
+                // Remove the temporary message and retry
+                setMessages(prev => prev.slice(0, -1));
+                res = await doFetch();
+                data = await res.json();
+            }
+
             const assistantMsg: Message = {
                 role: "assistant",
                 content: data.reply || "Sorry, I couldn't get a response. Please try again.",
             };
-            setMessages((prev) => [...prev, assistantMsg]);
+            setMessages(prev => [...prev, assistantMsg]);
         } catch {
-            setMessages((prev) => [
+            setMessages(prev => [
                 ...prev,
                 { role: "assistant", content: "Oops — something went wrong. Please try again! 🌱" },
             ]);
@@ -138,7 +162,8 @@ export default function AIChat({ footprint }: { footprint?: FootprintData }) {
             setIsLoading(false);
             inputRef.current?.focus();
         }
-    }, [input, isLoading, messages, footprint]);
+    }, [input, isLoading, messages, footprint, habitDescription]);
+
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === "Enter" && !e.shiftKey) {
@@ -147,13 +172,11 @@ export default function AIChat({ footprint }: { footprint?: FootprintData }) {
         }
     };
 
-    // ── Reset chat (also clears localStorage history) ─────────────────────
     const resetChat = () => {
         try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
         setMessages([makeWelcome(footprint)]);
     };
 
-    // ── Simple markdown bold rendering ─────────────────────────────────────
     const renderContent = (text: string) => {
         const parts = text.split(/\*\*(.*?)\*\*/g);
         return parts.map((part, i) =>
@@ -172,7 +195,10 @@ export default function AIChat({ footprint }: { footprint?: FootprintData }) {
                     <div>
                         <p className="font-bold text-sm">AI Carbon Coach</p>
                         <p className="text-xs text-muted-foreground">
-                            Powered by Gemini
+                            Powered by Gemini 2.0 Flash
+                            {habitDescription && (
+                                <span className="ml-1.5 text-[#6BAA75]">· habit context active</span>
+                            )}
                             {messages.length > 1 && (
                                 <span className="ml-1.5 text-[#6BAA75]">
                                     · {messages.length - 1} message{messages.length > 2 ? "s" : ""}
@@ -203,7 +229,6 @@ export default function AIChat({ footprint }: { footprint?: FootprintData }) {
                             transition={{ duration: 0.25 }}
                             className={`flex items-end gap-2 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}
                         >
-                            {/* Avatar */}
                             <div
                                 className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === "user"
                                     ? "bg-[#0B3B2A] dark:bg-[#4CD964]"
@@ -216,8 +241,6 @@ export default function AIChat({ footprint }: { footprint?: FootprintData }) {
                                     <Bot className="w-4 h-4 text-[#6BAA75]" />
                                 )}
                             </div>
-
-                            {/* Bubble */}
                             <div
                                 className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${msg.role === "user"
                                     ? "bg-[#0B3B2A] dark:bg-[#4CD964] text-white dark:text-[#0A1F18] rounded-br-sm"

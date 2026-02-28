@@ -72,7 +72,7 @@ function TransportStep({ data, onChange }: { data: FootprintInputData["transport
           transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
           className="text-4xl mb-2"
         >
-          🚗
+          🚙
         </motion.div>
         <h2 className="text-2xl font-bold">How do you get around?</h2>
         <p className="text-muted-foreground text-sm mt-1">Tell us about your typical transportation habits</p>
@@ -91,7 +91,7 @@ function TransportStep({ data, onChange }: { data: FootprintInputData["transport
           {/* Road animation */}
           <div className="relative h-6 bg-gray-300 dark:bg-gray-700 rounded-full mb-3 overflow-hidden">
             <div className="absolute inset-y-0 left-0 bg-[#6BAA75] dark:bg-[#4CD964] rounded-full transition-all duration-300" style={{ width: `${(data.carMilesPerWeek / 500) * 100}%` }} />
-            <div className="absolute top-1/2 -translate-y-1/2 transition-all duration-300 text-sm" style={{ left: `${Math.min((data.carMilesPerWeek / 500) * 100, 90)}%` }}>🚗</div>
+            <div className="absolute top-1/2 -translate-y-1/2 transition-all duration-300 text-sm" style={{ left: `${Math.min((data.carMilesPerWeek / 500) * 100, 90)}%` }}>🚙</div>
           </div>
           <Slider
             value={[data.carMilesPerWeek]}
@@ -192,10 +192,10 @@ function EnergyStep({ data, onChange }: { data: FootprintInputData["energy"]; on
               </div>
             </div>
             <div className="flex-1">
-              <p className="text-xs text-muted-foreground mb-1">Average US home: 900 kWh/month</p>
+              <p className="text-xs text-muted-foreground mb-1">Avg Indian home: 90 kWh/month</p>
               <div className="h-2 bg-muted rounded-full overflow-hidden">
                 <div className="h-full bg-gradient-to-r from-[#6BAA75] to-[#4CD964] rounded-full transition-all duration-300"
-                  style={{ width: `${Math.min((data.kwhPerMonth / 1800) * 100, 100)}%` }} />
+                  style={{ width: `${Math.min((data.kwhPerMonth / 200) * 100, 100)}%` }} />
               </div>
             </div>
           </div>
@@ -424,7 +424,7 @@ function WasteStep({ data, onChange }: { data: FootprintInputData["waste"]; onCh
         </div>
         <div className="mt-2 flex items-start gap-2 text-xs text-white/50">
           <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-          <span>Average US household generates ~4.4 lbs of trash per day</span>
+          <span>Average Indian household generates ~0.5 kg of waste per day</span>
         </div>
       </div>
     </div>

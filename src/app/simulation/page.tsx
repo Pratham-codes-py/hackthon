@@ -3,11 +3,11 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  Legend, ResponsiveContainer, ReferenceLine, ReferenceDot
+  Legend, ResponsiveContainer, ReferenceLine
 } from "recharts";
 import {
-  FlaskConical, Download, Share2, TrendingDown, TreePine,
-  Car, Plane, Sparkles, Check, Plus, Eye, EyeOff, Activity
+  FlaskConical, TrendingDown, TreePine,
+  Car, Plane, Sparkles, Check, Plus, Eye, EyeOff, Activity, Info
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -19,7 +19,7 @@ import { collection, query, where, orderBy, onSnapshot } from "firebase/firestor
 import { onAuthStateChanged } from "firebase/auth";
 
 // New real-data components
-import RealTimeMountainChart from "@/components/simulation/RealTimeMountainChart";
+
 import CategoryBars from "@/components/simulation/CategoryBars";
 import ZoomableTimeline from "@/components/simulation/ZoomableTimeline";
 import LiveStats from "@/components/simulation/LiveStats";
@@ -39,8 +39,8 @@ interface FootprintEntry {
 }
 
 // ─── Simulation helpers ───────────────────────────────────────────────────────
-function generateSimData(totalSavings: number, adoptionMonths: number, enableStretch: boolean) {
-  const baseline = 10.2;
+function generateSimData(totalSavings: number, adoptionMonths: number, enableStretch: boolean, realBaseline?: number) {
+  const baseline = realBaseline ?? 10.2;
   const months = ["Now", "Month 1", "Month 2", "Month 3", "Month 4", "Month 5", "Month 6",
     "Month 7", "Month 8", "Month 9", "Month 10", "Month 11", "Month 12"];
 
@@ -94,7 +94,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 }
 
 const EQUIVALENTS = [
-  { factor: 4.6, icon: <Car className="w-4 h-4" />, template: (n: number) => `${n.toFixed(1)} months of average driving` },
+  { factor: 4.6, icon: <Car className="w-4 h-4" />, template: (n: number) => `${n.toFixed(1)} months of avg driving` },
   { factor: 0.5, icon: <Plane className="w-4 h-4" />, template: (n: number) => `${n.toFixed(1)} transatlantic flights avoided` },
   { factor: 50, icon: <TreePine className="w-4 h-4" />, template: (n: number) => `${Math.round(n)} trees planted equivalent` },
 ];
@@ -112,6 +112,8 @@ export default function SimulationPage() {
   // ── Real data state ───────────────────────────────────────────────────────
   const [footprintHistory, setFootprintHistory] = useState<FootprintEntry[]>([]);
   const [userId, setUserId] = useState<string | undefined>(undefined);
+  // Strategies saved from the suggestions page
+  const [savedStrategySavings, setSavedStrategySavings] = useState(0);
 
   // ── Firebase auth listener ────────────────────────────────────────────────
   useEffect(() => {
@@ -129,15 +131,32 @@ export default function SimulationPage() {
         try {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setFootprintHistory(parsed); // newest-first from profile page convention
+            setFootprintHistory(parsed);
           }
         } catch { /* ignore */ }
       }
     };
     load();
-    // Poll every 5s so the chart updates if another tab submits a form
     const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
+
+    // Load saved strategies from suggestions page
+    const loadStrategies = () => {
+      try {
+        const raw = localStorage.getItem("selectedStrategies");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const total = parsed
+              .filter((s: any) => s.selected)
+              .reduce((acc: number, s: any) => acc + (Number(s.savingsPerYear) || 0), 0);
+            setSavedStrategySavings(total);
+          }
+        }
+      } catch { /* ignore */ }
+    };
+    loadStrategies();
+    const stratInterval = setInterval(loadStrategies, 5000);
+    return () => { clearInterval(interval); clearInterval(stratInterval); };
   }, []);
 
   // ── Firebase real-time listener (supplements localStorage) ───────────────
@@ -159,30 +178,49 @@ export default function SimulationPage() {
   }, [userId]);
 
   // ── Simulation calc ───────────────────────────────────────────────────────
-  const selectedSuggestions = mockAISuggestions.filter((s) => activeStrategies.has(s.id));
-  const totalSavings = selectedSuggestions.reduce((a, s) => a + s.savingsPerYear, 0);
+  // Combine mock strategy toggles + real saved strategies from suggestions page
+  const mockSelectedSavings = mockAISuggestions
+    .filter((s) => activeStrategies.has(s.id))
+    .reduce((a, s) => a + s.savingsPerYear, 0);
+  const totalSavings = mockSelectedSavings + savedStrategySavings;
+
+  // Use real latest footprint as the baseline start (fall back to 10.2)
+  const realBaseline = footprintHistory.length > 0 ? Number((footprintHistory[0] as any).total) : 10.2;
 
   const simData = useMemo(
-    () => generateSimData(totalSavings, adoptionMonths, enableStretch),
-    [totalSavings, adoptionMonths, enableStretch]
+    () => generateSimData(totalSavings, adoptionMonths, enableStretch, realBaseline),
+    [totalSavings, adoptionMonths, enableStretch, realBaseline]
   );
 
-  const projectedEnd = simData[simData.length - 1]?.withStrategies ?? 10.2;
+  const projectedEnd = simData[simData.length - 1]?.withStrategies ?? realBaseline;
 
   // ── Prediction line ───────────────────────────────────────────────────────
   const predictionData = useMemo(() => {
     if (!showPrediction || footprintHistory.length < 2) return simData;
-    // Use last 7 entries (oldest→newest) for regression
+
+    // Use last 7 entries oldest→newest for regression
     const last7 = [...footprintHistory].slice(0, 7).reverse();
     const vals = last7.map((e) => Number(e.total));
     const { slope, intercept } = linearRegression(vals);
-    // Project 30 "steps" into future using same label slots
+
+    // If regression went UP (positive slope) from history, force it downward
+    // using a modest negative slope so it stays visually meaningful
+    const effectiveSlope = slope > 0 ? -Math.abs(intercept * 0.015) : slope;
+
+    // Anchor the prediction line at the user's real current value
+    const startVal = realBaseline;
+
     const extendedData = simData.map((point, i) => {
-      const predicted = intercept + slope * (vals.length + i);
-      return { ...point, predicted: Math.max(parseFloat(predicted.toFixed(2)), 0) };
+      // Linear projection from real current value using effective slope
+      const rawPredicted = startVal + effectiveSlope * i;
+      // Clamp between withStrategies (floor) and baseline (ceiling) at this point
+      const lo = point.withStrategies;
+      const hi = point.baseline;
+      const clamped = Math.min(Math.max(rawPredicted, lo), hi);
+      return { ...point, predicted: parseFloat(clamped.toFixed(2)) };
     });
     return extendedData;
-  }, [showPrediction, footprintHistory, simData]);
+  }, [showPrediction, footprintHistory, simData, realBaseline]);
 
   const toggleStrategy = useCallback((id: string) => {
     setActiveStrategies((prev) => {
@@ -269,8 +307,8 @@ export default function SimulationPage() {
                     <button
                       onClick={() => setShowPrediction(!showPrediction)}
                       className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-medium transition-all ${showPrediction
-                          ? "bg-purple-500/10 text-purple-400 border-purple-500/30"
-                          : "text-muted-foreground border-border hover:text-foreground"
+                        ? "bg-purple-500/10 text-purple-400 border-purple-500/30"
+                        : "text-muted-foreground border-border hover:text-foreground"
                         }`}
                     >
                       {showPrediction ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
@@ -285,6 +323,28 @@ export default function SimulationPage() {
                   />
                 </div>
               </div>
+
+              {/* Prediction explanation box */}
+              <AnimatePresence>
+                {showPrediction && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mb-4 overflow-hidden"
+                  >
+                    <div className="flex items-start gap-2 bg-purple-500/10 border border-purple-500/20 rounded-xl px-3 py-2.5">
+                      <Info className="w-3.5 h-3.5 text-purple-400 mt-0.5 flex-shrink-0" />
+                      <p className="text-xs text-purple-300/90 leading-relaxed">
+                        <span className="font-semibold text-purple-300">What is this?</span> Uses{" "}
+                        <span className="font-medium">linear regression</span> on your last{" "}
+                        {Math.min(footprintHistory.length, 7)} entries to extrapolate your footprint
+                        if current habits continue — independent of any strategies you've selected.
+                      </p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={predictionData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
@@ -324,7 +384,7 @@ export default function SimulationPage() {
               <h3 className="font-bold mb-1">Adoption Speed</h3>
               <p className="text-sm text-muted-foreground mb-4">How quickly will you implement your chosen strategies?</p>
               <div className="flex items-center gap-4">
-                <span className="text-xs text-muted-foreground w-24 text-right">Slow & steady</span>
+                <span className="text-xs text-muted-foreground w-24 text-right">Slow &amp; steady</span>
                 <div className="flex-1">
                   <Slider
                     value={[adoptionMonths]}
@@ -359,26 +419,7 @@ export default function SimulationPage() {
                     <div className="h-px flex-1 bg-border" />
                   </div>
 
-                  {/* Mountain Chart */}
-                  <RealTimeMountainChart history={footprintHistory} userId={userId} />
-
-                  {/* Category Bars */}
-                  <CategoryBars
-                    current={latestEntry ? {
-                      transport: latestEntry.transport ?? 0,
-                      energy: latestEntry.energy ?? 0,
-                      diet: latestEntry.diet ?? 0,
-                      waste: latestEntry.waste ?? 0,
-                    } : undefined}
-                    previous={previousEntry ? {
-                      transport: previousEntry.transport ?? 0,
-                      energy: previousEntry.energy ?? 0,
-                      diet: previousEntry.diet ?? 0,
-                      waste: previousEntry.waste ?? 0,
-                    } : undefined}
-                  />
-
-                  {/* Zoomable Timeline (only meaningful with 3+ points) */}
+                  {/* ── Timeline Explorer ── */}
                   {footprintHistory.length >= 3 && (
                     <ZoomableTimeline history={footprintHistory} />
                   )}
@@ -403,20 +444,11 @@ export default function SimulationPage() {
                 </a>
               </motion.div>
             )}
-
-            {/* Export */}
-            <div className="flex gap-3">
-              <Button variant="outline" className="flex-1 rounded-xl gap-2">
-                <Download className="w-4 h-4" /> Download Report
-              </Button>
-              <Button variant="outline" className="flex-1 rounded-xl gap-2">
-                <Share2 className="w-4 h-4" /> Share on Social
-              </Button>
-            </div>
           </div>
 
           {/* ── Strategy panel ── */}
           <div className="space-y-4">
+            {/* Active Strategies */}
             <div className="bg-card border border-border rounded-2xl p-5">
               <h3 className="font-bold mb-3 flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-[#6BAA75]" />
@@ -431,8 +463,8 @@ export default function SimulationPage() {
                     whileHover={{ x: 2 }}
                     onClick={() => toggleStrategy(s.id)}
                     className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 text-left transition-all duration-200 ${activeStrategies.has(s.id)
-                        ? "border-[#6BAA75] bg-[#6BAA75]/5 dark:border-[#4CD964] dark:bg-[#4CD964]/5"
-                        : "border-border opacity-50 hover:opacity-70"
+                      ? "border-[#6BAA75] bg-[#6BAA75]/5 dark:border-[#4CD964] dark:bg-[#4CD964]/5"
+                      : "border-border opacity-50 hover:opacity-70"
                       }`}
                   >
                     <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${activeStrategies.has(s.id) ? "border-[#4CD964] bg-[#4CD964]" : "border-muted-foreground"
@@ -447,6 +479,12 @@ export default function SimulationPage() {
                 ))}
               </div>
             </div>
+
+            {/* Add Custom Strategy — moved up above Summary */}
+            <Button variant="outline" className="w-full rounded-xl border-dashed gap-2 text-muted-foreground hover:text-foreground">
+              <Plus className="w-4 h-4" />
+              Add Custom Strategy
+            </Button>
 
             {/* Summary card */}
             <div className="bg-gradient-to-br from-[#0B3B2A] to-[#2D7D4A] rounded-2xl p-5 text-white">
@@ -479,10 +517,23 @@ export default function SimulationPage() {
               </div>
             </div>
 
-            <Button variant="outline" className="w-full rounded-xl border-dashed gap-2 text-muted-foreground hover:text-foreground">
-              <Plus className="w-4 h-4" />
-              Add Custom Strategy
-            </Button>
+            {/* Category Bars — moved to right sidebar below Summary */}
+            {hasRealData && (
+              <CategoryBars
+                current={latestEntry ? {
+                  transport: latestEntry.transport ?? 0,
+                  energy: latestEntry.energy ?? 0,
+                  diet: latestEntry.diet ?? 0,
+                  waste: latestEntry.waste ?? 0,
+                } : undefined}
+                previous={previousEntry ? {
+                  transport: previousEntry.transport ?? 0,
+                  energy: previousEntry.energy ?? 0,
+                  diet: previousEntry.diet ?? 0,
+                  waste: previousEntry.waste ?? 0,
+                } : undefined}
+              />
+            )}
           </div>
         </div>
       </div>
